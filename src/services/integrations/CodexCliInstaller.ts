@@ -18,7 +18,6 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { replaceTaggedContent } from '../../utils/claude-md-utils.js';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_STATE_PATH,
@@ -139,38 +138,9 @@ function writeTranscriptWatchConfig(config: TranscriptWatchConfig): void {
  * Preserves any existing user content outside the tags.
  */
 function removeCodexAgentsMdContext(): void {
-  if (!existsSync(CODEX_AGENTS_MD_PATH)) return;
-
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
-
-  try {
-    readAndStripContextTags(startTag, endTag);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn('WORKER', 'Failed to clean AGENTS.md context', { error: message });
-  }
-}
-
-function readAndStripContextTags(startTag: string, endTag: string): void {
-  const content = readFileSync(CODEX_AGENTS_MD_PATH, 'utf-8');
-
-  const startIdx = content.indexOf(startTag);
-  const endIdx = content.indexOf(endTag);
-
-  if (startIdx === -1 || endIdx === -1) return;
-
-  const before = content.substring(0, startIdx).replace(/\n+$/, '');
-  const after = content.substring(endIdx + endTag.length).replace(/^\n+/, '');
-  const finalContent = (before + (after ? '\n\n' + after : '')).trim();
-
-  if (finalContent) {
-    writeFileSync(CODEX_AGENTS_MD_PATH, finalContent + '\n');
-  } else {
-    writeFileSync(CODEX_AGENTS_MD_PATH, '');
-  }
-
-  console.log(`  Removed legacy global context from ${CODEX_AGENTS_MD_PATH}`);
+  logger.info('CODEX', 'Skipping legacy AGENTS.md cleanup; runtime-only mode enabled', {
+    path: CODEX_AGENTS_MD_PATH,
+  });
 }
 
 /**
@@ -220,12 +190,12 @@ function writeConfigAndShowCodexInstructions(mergedConfig: TranscriptWatchConfig
 Installation complete!
 
 Transcript watch config: ${DEFAULT_CONFIG_PATH}
-Context files: <workspace>/AGENTS.md
+Context injection: runtime-only (no workspace AGENTS.md writes)
 
 How it works:
   - claude-mem watches Codex session JSONL files for new activity
   - No hooks needed -- transcript watching is fully automatic
-  - Context from past sessions is injected via AGENTS.md in the active Codex workspace
+  - Context from past sessions remains available through worker-backed memory, without mutating workspace files
 
 Next steps:
   1. Start claude-mem worker: npx claude-mem start
@@ -334,11 +304,7 @@ export function checkCodexCliStatus(): number {
   console.log(`  Schema: ${codexSchema ? `codex (v${codexSchema.version ?? '?'})` : 'missing'}`);
   console.log(`  Start at end: ${codexWatch.startAtEnd ?? false}`);
 
-  if (codexWatch.context) {
-    console.log(`  Context mode: ${codexWatch.context.mode}`);
-    console.log(`  Context path: ${codexWatch.context.path ?? '<workspace>/AGENTS.md (default)'}`);
-    console.log(`  Context updates on: ${codexWatch.context.updateOn?.join(', ') ?? 'none'}`);
-  }
+  console.log('  Context injection: runtime-only (workspace AGENTS.md disabled)');
 
   if (existsSync(CODEX_AGENTS_MD_PATH)) {
     const mdContent = readFileSync(CODEX_AGENTS_MD_PATH, 'utf-8');

@@ -346,6 +346,13 @@ export class TranscriptEventProcessor {
   private async updateContext(session: SessionState, watch: WatchTarget): Promise<void> {
     if (!watch.context) return;
     if (watch.context.mode !== 'agents') return;
+    if (watch.name === 'codex') {
+      logger.debug('TRANSCRIPT', 'Skipping Codex AGENTS.md context update; runtime-only mode enabled', {
+        watch: watch.name,
+        cwd: session.cwd ?? watch.workspace,
+      });
+      return;
+    }
 
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) return;
