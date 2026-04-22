@@ -144,6 +144,12 @@ Or install for OpenCode:
 npx claude-mem install --ide opencode
 ```
 
+Or install for Codex CLI:
+
+```bash
+npx claude-mem install --ide codex-cli
+```
+
 Or install from the plugin marketplace inside Claude Code:
 
 ```bash
@@ -152,7 +158,7 @@ Or install from the plugin marketplace inside Claude Code:
 /plugin install claude-mem
 ```
 
-Restart Claude Code or Gemini CLI. Context from previous sessions will automatically appear in new sessions.
+Restart your IDE or CLI after installation. Claude Code uses native plugin hooks, while OpenCode and Codex CLI use runtime-only, user-level isolated memory instead of mutating workspace `AGENTS.md` files. Context from previous sessions will automatically appear in new sessions.
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 
