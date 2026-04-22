@@ -94,11 +94,7 @@ export const SAMPLE_CONFIG: TranscriptWatchConfig = {
       name: 'codex',
       path: '~/.codex/sessions/**/*.jsonl',
       schema: 'codex',
-      startAtEnd: true,
-      context: {
-        mode: 'agents',
-        updateOn: ['session_start', 'session_end']
-      }
+      startAtEnd: true
     }
   ],
   stateFile: DEFAULT_STATE_PATH

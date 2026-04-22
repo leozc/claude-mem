@@ -19,7 +19,7 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // ============================================================================
@@ -139,17 +139,11 @@ export function installOpenCodePlugin(): number {
  * @returns 0 on success, 1 on failure
  */
 export function injectContextIntoAgentsMd(contextContent: string): number {
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-
-  try {
-    injectContextIntoMarkdownFile(agentsMdPath, contextContent, '# Claude-Mem Memory Context');
-    logger.info('OPENCODE', 'Context injected into AGENTS.md', { path: agentsMdPath });
-    return 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`Failed to inject context into AGENTS.md: ${message}`);
-    return 1;
-  }
+  void contextContent;
+  logger.info('OPENCODE', 'Skipping AGENTS.md context injection; runtime-only mode enabled', {
+    path: getOpenCodeAgentsMdPath(),
+  });
+  return 0;
 }
 
 /**
@@ -197,10 +191,11 @@ async function fetchAndInjectOpenCodeContext(port: number, project: string): Pro
 
   const contextText = await response.text();
   if (contextText && contextText.trim()) {
-    const injectResult = injectContextIntoAgentsMd(contextText);
-    if (injectResult !== 0) {
-      logger.warn('OPENCODE', 'Failed to inject context into AGENTS.md during sync');
-    }
+    logger.debug('OPENCODE', 'Context fetched for runtime-only OpenCode mode', {
+      project,
+      path: getOpenCodeAgentsMdPath(),
+      length: contextText.length,
+    });
   }
 }
 
@@ -243,38 +238,7 @@ export function uninstallOpenCodePlugin(): number {
     }
   }
 
-  // Remove context section from AGENTS.md
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-  if (existsSync(agentsMdPath)) {
-    let content: string;
-    try {
-      content = readFileSync(agentsMdPath, 'utf-8');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`  Failed to read AGENTS.md: ${message}`);
-      hasErrors = true;
-      content = '';
-    }
-
-    const tagStartIndex = content.indexOf(CONTEXT_TAG_OPEN);
-    const tagEndIndex = content.indexOf(CONTEXT_TAG_CLOSE);
-
-    if (tagStartIndex !== -1 && tagEndIndex !== -1) {
-      content =
-        content.slice(0, tagStartIndex).trimEnd() +
-        '\n' +
-        content.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length).trimStart();
-
-      const trimmedContent = content.trim();
-      try {
-        writeOrRemoveCleanedAgentsMd(agentsMdPath, trimmedContent);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`  Failed to clean AGENTS.md: ${message}`);
-        hasErrors = true;
-      }
-    }
-  }
+  console.log('  Left AGENTS.md untouched (runtime-only mode).');
 
   return hasErrors ? 1 : 0;
 }
@@ -303,15 +267,9 @@ export function checkOpenCodeStatus(): number {
   console.log(`  Installed: ${existsSync(pluginPath) ? 'yes' : 'no'}`);
   console.log('');
 
-  console.log(`Context (AGENTS.md): ${agentsMdPath}`);
-  if (existsSync(agentsMdPath)) {
-    const content = readFileSync(agentsMdPath, 'utf-8');
-    const hasContextTags = content.includes(CONTEXT_TAG_OPEN);
-    console.log(`  Exists: yes`);
-    console.log(`  Has claude-mem context: ${hasContextTags ? 'yes' : 'no'}`);
-  } else {
-    console.log(`  Exists: no`);
-  }
+  console.log('Context injection: runtime-only (AGENTS.md untouched)');
+  console.log(`  AGENTS path: ${agentsMdPath}`);
+  console.log(`  Exists: ${existsSync(agentsMdPath) ? 'yes' : 'no'}`);
 
   console.log('');
   return 0;
@@ -362,12 +320,12 @@ Use claude-mem search tools for manual memory queries.`;
 
   const injectResult = injectContextIntoAgentsMd(contextToInject);
   if (injectResult !== 0) {
-    logger.warn('OPENCODE', `Failed to inject ${contextSource} context into AGENTS.md during install`);
+    logger.warn('OPENCODE', 'Failed to enable runtime-only memory mode during install');
   } else {
     if (contextSource === 'existing memory') {
-      console.log('  Context injected from existing memory');
+      console.log('  Runtime-only memory mode enabled with existing memory available');
     } else {
-      console.log('  Placeholder context created (worker not running)');
+      console.log('  Runtime-only memory mode enabled (worker not running)');
     }
   }
 
@@ -375,7 +333,7 @@ Use claude-mem search tools for manual memory queries.`;
 Installation complete!
 
 Plugin installed to: ${getInstalledPluginPath()}
-Context file: ${getOpenCodeAgentsMdPath()}
+Context injection: runtime-only (AGENTS.md untouched)
 
 Next steps:
   1. Start claude-mem worker: npx claude-mem start
