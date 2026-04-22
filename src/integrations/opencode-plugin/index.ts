@@ -1,22 +1,13 @@
 /**
  * OpenCode Plugin for claude-mem
  *
- * Integrates claude-mem persistent memory with OpenCode (110k+ stars).
+ * Integrates claude-mem persistent memory with OpenCode.
  * Runs inside OpenCode's Bun-based plugin runtime.
- *
- * Plugin hooks:
- * - tool.execute.after: Captures tool execution observations
- * - Bus events: session.created, message.updated, session.compacted,
- *   file.edited, session.deleted
- *
- * Custom tool:
- * - claude_mem_search: Search memory database from within OpenCode
  */
 
-// ============================================================================
-// Minimal type declarations for OpenCode Plugin SDK
-// These match the runtime API provided by @opencode-ai/plugin
-// ============================================================================
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 interface OpenCodeProject {
   name?: string;
@@ -29,7 +20,22 @@ interface OpenCodePluginContext {
   directory: string;
   worktree: string;
   serverUrl: URL;
-  $: unknown; // BunShell
+  $: unknown;
+}
+
+interface CommandExecuteBeforeInput {
+  command: string;
+  sessionID: string;
+  arguments: string;
+}
+
+interface ChatMessageInput {
+  sessionID: string;
+}
+
+interface ChatMessageOutputPart {
+  type: string;
+  text?: string;
 }
 
 interface ToolExecuteAfterInput {
@@ -45,79 +51,71 @@ interface ToolExecuteAfterOutput {
   metadata: Record<string, unknown>;
 }
 
-interface ToolDefinition {
-  description: string;
-  args: Record<string, unknown>;
-  execute: (args: Record<string, unknown>, context: unknown) => Promise<string>;
+interface SessionInfo {
+  id: string;
 }
 
-// Bus event payloads
 interface SessionCreatedEvent {
-  event: {
-    sessionID: string;
-    directory?: string;
-    project?: string;
-  };
-}
-
-interface MessageUpdatedEvent {
-  event: {
-    sessionID: string;
-    role: string;
-    content: string;
-  };
-}
-
-interface SessionCompactedEvent {
-  event: {
-    sessionID: string;
-    summary?: string;
-    messageCount?: number;
-  };
-}
-
-interface FileEditedEvent {
-  event: {
-    sessionID: string;
-    path: string;
-    diff?: string;
+  type: 'session.created';
+  properties: {
+    info: SessionInfo;
   };
 }
 
 interface SessionDeletedEvent {
-  event: {
-    sessionID: string;
+  type: 'session.deleted';
+  properties: {
+    info: SessionInfo;
   };
 }
 
-// ============================================================================
-// Constants
-// ============================================================================
+interface OpenCodeEventEnvelope {
+  event: {
+    type: string;
+    properties?: Record<string, unknown>;
+  };
+}
 
-const WORKER_BASE_URL = "http://127.0.0.1:37777";
+const WORKER_BASE_URL = 'http://127.0.0.1:37777';
+const WORKER_TOKEN_PATH = join(homedir(), '.claude-mem', 'worker-auth-token');
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
+const MAX_SESSION_MAP_ENTRIES = 1000;
 
-// ============================================================================
-// Worker HTTP Client
-// ============================================================================
+const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
+const initializedSessionIds = new Set<string>();
 
-const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
+async function getJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  try {
+    const token = (await readFile(WORKER_TOKEN_PATH, 'utf-8')).trim();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[claude-mem] Failed to read worker auth token: ${message}`);
+  }
+
+  return headers;
+}
 
 async function workerPost(
   path: string,
   body: Record<string, unknown>,
+  headers: Record<string, string>,
 ): Promise<Record<string, unknown> | null> {
   let response: Response;
+
   try {
     response = await fetch(`${WORKER_BASE_URL}${path}`, {
-      method: "POST",
-      headers: JSON_HEADERS,
+      method: 'POST',
+      headers,
       body: JSON.stringify(body),
     });
   } catch (error: unknown) {
-    // Gracefully handle ECONNREFUSED — worker may not be running
     const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    if (!message.includes('ECONNREFUSED')) {
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
     return null;
@@ -127,53 +125,16 @@ async function workerPost(
     console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     return null;
   }
-  return (await response.json()) as Record<string, unknown>;
-}
 
-function workerPostFireAndForget(
-  path: string,
-  body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
-    }
-  });
-}
-
-async function workerGetText(path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
-    if (!response.ok) {
-      console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
-      return null;
-    }
-    return await response.text();
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
-    }
+    return (await response.json()) as Record<string, unknown>;
+  } catch {
     return null;
   }
 }
 
-// ============================================================================
-// Session tracking
-// ============================================================================
-
-const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-
-const MAX_SESSION_MAP_ENTRIES = 1000;
-
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
-    // Evict oldest entries when the map exceeds the cap (Map preserves insertion order)
     while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
@@ -182,190 +143,126 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
         break;
       }
     }
+
     contentSessionIdsByOpenCodeSessionId.set(
       openCodeSessionId,
       `opencode-${openCodeSessionId}-${Date.now()}`,
     );
   }
+
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
 }
 
-// ============================================================================
-// Plugin Entry Point
-// ============================================================================
-
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
-  const projectName = ctx.project?.name || "opencode";
+  const projectName = ctx.project?.name || 'opencode';
+  const jsonHeaders = await getJsonHeaders();
+
+  async function ensureSessionInitialized(
+    sessionID: string,
+    prompt = '',
+  ): Promise<string> {
+    const contentSessionId = getOrCreateContentSessionId(sessionID);
+
+    if (initializedSessionIds.has(sessionID)) {
+      return contentSessionId;
+    }
+
+    const result = await workerPost(
+      '/api/sessions/init',
+      {
+        contentSessionId,
+        project: projectName,
+        prompt,
+        platform_source: 'opencode',
+      },
+      jsonHeaders,
+    );
+
+    if (result !== null) {
+      initializedSessionIds.add(sessionID);
+    }
+
+    return contentSessionId;
+  }
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
   return {
-    // ------------------------------------------------------------------
-    // Direct interceptor hooks
-    // ------------------------------------------------------------------
-    hooks: {
-      tool: {
-        execute: {
-          after: (
-            input: ToolExecuteAfterInput,
-            output: ToolExecuteAfterOutput,
-          ) => {
-            const contentSessionId = getOrCreateContentSessionId(input.sessionID);
-
-            // Truncate long tool output
-            let toolResponseText = output.output || "";
-            if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
-              toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
-            }
-
-            workerPostFireAndForget("/api/sessions/observations", {
-              contentSessionId,
-              tool_name: input.tool,
-              tool_input: input.args || {},
-              tool_response: toolResponseText,
-              cwd: ctx.directory,
-            });
-          },
-        },
-      },
-    },
-
-    // ------------------------------------------------------------------
-    // Bus event handlers
-    // ------------------------------------------------------------------
-    event: (eventName: string, payload: unknown) => {
-      switch (eventName) {
-        case "session.created": {
-          const { event } = payload as SessionCreatedEvent;
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
-
-          workerPostFireAndForget("/api/sessions/init", {
-            contentSessionId,
-            project: projectName,
-            prompt: "",
-          });
+    async event({ event }: OpenCodeEventEnvelope): Promise<void> {
+      switch (event.type) {
+        case 'session.created': {
+          const createdEvent = event as SessionCreatedEvent;
+          await ensureSessionInitialized(createdEvent.properties.info.id);
           break;
         }
 
-        case "message.updated": {
-          const { event } = payload as MessageUpdatedEvent;
+        case 'session.deleted': {
+          const deletedEvent = event as SessionDeletedEvent;
+          const sessionID = deletedEvent.properties.info.id;
+          const contentSessionId = contentSessionIdsByOpenCodeSessionId.get(sessionID);
 
-          // Only capture assistant messages as observations
-          if (event.role !== "assistant") break;
+          if (!contentSessionId) break;
 
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
-
-          let messageText = event.content || "";
-          if (messageText.length > MAX_TOOL_RESPONSE_LENGTH) {
-            messageText = messageText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
-          }
-
-          workerPostFireAndForget("/api/sessions/observations", {
-            contentSessionId,
-            tool_name: "assistant_message",
-            tool_input: {},
-            tool_response: messageText,
-            cwd: ctx.directory,
-          });
-          break;
-        }
-
-        case "session.compacted": {
-          const { event } = payload as SessionCompactedEvent;
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
-
-          workerPostFireAndForget("/api/sessions/summarize", {
-            contentSessionId,
-            last_assistant_message: event.summary || "",
-          });
-          break;
-        }
-
-        case "file.edited": {
-          const { event } = payload as FileEditedEvent;
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
-
-          workerPostFireAndForget("/api/sessions/observations", {
-            contentSessionId,
-            tool_name: "file_edit",
-            tool_input: { path: event.path },
-            tool_response: event.diff
-              ? event.diff.slice(0, MAX_TOOL_RESPONSE_LENGTH)
-              : `File edited: ${event.path}`,
-            cwd: ctx.directory,
-          });
-          break;
-        }
-
-        case "session.deleted": {
-          const { event } = payload as SessionDeletedEvent;
-          const contentSessionId = contentSessionIdsByOpenCodeSessionId.get(
-            event.sessionID,
+          await workerPost(
+            '/api/sessions/complete',
+            { contentSessionId },
+            jsonHeaders,
           );
 
-          if (contentSessionId) {
-            workerPostFireAndForget("/api/sessions/complete", {
-              contentSessionId,
-            });
-            contentSessionIdsByOpenCodeSessionId.delete(event.sessionID);
-          }
+          contentSessionIdsByOpenCodeSessionId.delete(sessionID);
+          initializedSessionIds.delete(sessionID);
           break;
         }
       }
     },
 
-    // ------------------------------------------------------------------
-    // Custom tools
-    // ------------------------------------------------------------------
-    tool: {
-      claude_mem_search: {
-        description:
-          "Search claude-mem memory database for past observations, sessions, and context",
-        args: {
-          query: {
-            type: "string",
-            description: "Search query for memory observations",
-          },
+    async 'command.execute.before'(
+      input: CommandExecuteBeforeInput,
+      _output: { parts: unknown[] },
+    ): Promise<void> {
+      const prompt = input.arguments
+        ? `${input.command} ${input.arguments}`.trim()
+        : input.command;
+
+      await ensureSessionInitialized(input.sessionID, prompt);
+    },
+
+    async 'chat.message'(
+      input: ChatMessageInput,
+      output: { message: unknown; parts: ChatMessageOutputPart[] },
+    ): Promise<void> {
+      const prompt = (output.parts || [])
+        .filter((part) => part.type === 'text' && typeof part.text === 'string')
+        .map((part) => part.text?.trim() || '')
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+
+      await ensureSessionInitialized(input.sessionID, prompt);
+    },
+
+    async 'tool.execute.after'(
+      input: ToolExecuteAfterInput,
+      output: ToolExecuteAfterOutput,
+    ): Promise<void> {
+      const contentSessionId = await ensureSessionInitialized(input.sessionID);
+
+      let toolResponseText = output.output || '';
+      if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
+        toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
+      }
+
+      await workerPost(
+        '/api/sessions/observations',
+        {
+          contentSessionId,
+          tool_name: input.tool,
+          tool_input: input.args || {},
+          tool_response: toolResponseText,
+          cwd: ctx.directory,
         },
-        async execute(
-          args: Record<string, unknown>,
-        ): Promise<string> {
-          const query = String(args.query || "");
-          if (!query) {
-            return "Please provide a search query.";
-          }
-
-          const text = await workerGetText(
-            `/api/search/observations?query=${encodeURIComponent(query)}&limit=10`,
-          );
-
-          if (!text) {
-            return "claude-mem worker is not running. Start it with: npx claude-mem start";
-          }
-
-          let data: any;
-          try {
-            data = JSON.parse(text);
-          } catch (error: unknown) {
-            console.warn('[claude-mem] Failed to parse search results:', error instanceof Error ? error.message : String(error));
-            return "Failed to parse search results.";
-          }
-
-          const items = Array.isArray(data.items) ? data.items : [];
-          if (items.length === 0) {
-            return `No results found for "${query}".`;
-          }
-
-          return items
-            .slice(0, 10)
-            .map((item: Record<string, unknown>, index: number) => {
-              const title = String(item.title || item.subtitle || "Untitled");
-              const project = item.project ? ` [${String(item.project)}]` : "";
-              return `${index + 1}. ${title}${project}`;
-            })
-            .join("\n");
-        },
-      } satisfies ToolDefinition,
+        jsonHeaders,
+      );
     },
   };
 };
