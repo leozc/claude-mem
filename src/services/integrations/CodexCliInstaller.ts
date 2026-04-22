@@ -6,7 +6,7 @@
  *
  * 1. Writes/merges transcript-watch config to ~/.claude-mem/transcript-watch.json
  * 2. Sets up watch for ~/.codex/sessions/**\/*.jsonl using existing watcher
- * 3. Injects context via workspace-local AGENTS.md files (Codex reads these natively)
+ * 3. Uses runtime-only, user-level isolated memory instead of workspace AGENTS.md files
  *
  * Anti-patterns:
  *   - Does NOT add notify hooks -- transcript watching is sufficient
@@ -129,25 +129,22 @@ function writeTranscriptWatchConfig(config: TranscriptWatchConfig): void {
 }
 
 // ---------------------------------------------------------------------------
-// Context Injection (AGENTS.md)
+// Legacy AGENTS.md Compatibility Reporting
 // ---------------------------------------------------------------------------
 
 /**
- * Remove legacy claude-mem context from ~/.codex/AGENTS.md.
- * Codex now uses workspace-local AGENTS.md files to avoid cross-project bleed.
- * Preserves any existing user content outside the tags.
+ * Runtime-only mode: do not mutate legacy ~/.codex/AGENTS.md.
  */
-function removeCodexAgentsMdContext(): void {
-  logger.info('CODEX', 'Skipping legacy AGENTS.md cleanup; runtime-only mode enabled', {
+function logLegacyCodexAgentsPathUntouched(): void {
+  logger.info('CODEX', 'Skipping legacy AGENTS.md cleanup; runtime-only user-level isolation enabled', {
     path: CODEX_AGENTS_MD_PATH,
   });
 }
 
 /**
- * @deprecated Codex now uses workspace-local AGENTS.md via transcript processor fallback.
- * Preserves user content outside the <claude-mem-context> tags.
+ * @deprecated Runtime-only mode leaves legacy ~/.codex/AGENTS.md untouched.
  */
-const cleanupLegacyCodexAgentsMdContext = removeCodexAgentsMdContext;
+const logLegacyCodexCompatibilityState = logLegacyCodexAgentsPathUntouched;
 
 // ---------------------------------------------------------------------------
 // Public API: Install
@@ -157,7 +154,7 @@ const cleanupLegacyCodexAgentsMdContext = removeCodexAgentsMdContext;
  * Install Codex CLI integration for claude-mem.
  *
  * 1. Merges Codex transcript-watch config into ~/.claude-mem/transcript-watch.json
- * 2. Cleans up any legacy global context block in ~/.codex/AGENTS.md
+ * 2. Leaves legacy ~/.codex/AGENTS.md untouched
  *
  * @returns 0 on success, 1 on failure
  */
@@ -184,13 +181,13 @@ function writeConfigAndShowCodexInstructions(mergedConfig: TranscriptWatchConfig
   console.log(`  Watch path: ~/.codex/sessions/**/*.jsonl`);
   console.log(`  Schema: codex (v${SAMPLE_CONFIG.schemas?.codex?.version ?? '?'})`);
 
-  cleanupLegacyCodexAgentsMdContext();
+  logLegacyCodexCompatibilityState();
 
   console.log(`
 Installation complete!
 
 Transcript watch config: ${DEFAULT_CONFIG_PATH}
-Context injection: runtime-only (no workspace AGENTS.md writes)
+Context injection: runtime-only, user-level isolated memory (no workspace AGENTS.md writes)
 
 How it works:
   - claude-mem watches Codex session JSONL files for new activity
@@ -211,7 +208,7 @@ Next steps:
  * Remove Codex CLI integration from claude-mem.
  *
  * 1. Removes the codex watch and schema from transcript-watch.json (preserves others)
- * 2. Removes context section from AGENTS.md (preserves user content)
+ * 2. Leaves legacy AGENTS.md untouched
  *
  * @returns 0 on success, 1 on failure
  */
@@ -242,8 +239,8 @@ export function uninstallCodexCli(): number {
     console.log('  No transcript-watch.json found -- nothing to remove.');
   }
 
-  // Step 2: Remove legacy global context section from AGENTS.md
-  cleanupLegacyCodexAgentsMdContext();
+  // Step 2: Leave legacy global context untouched in runtime-only mode
+  logLegacyCodexCompatibilityState();
 
   console.log('\nUninstallation complete!');
   console.log('Restart claude-mem worker to apply changes.\n');
@@ -304,7 +301,7 @@ export function checkCodexCliStatus(): number {
   console.log(`  Schema: ${codexSchema ? `codex (v${codexSchema.version ?? '?'})` : 'missing'}`);
   console.log(`  Start at end: ${codexWatch.startAtEnd ?? false}`);
 
-  console.log('  Context injection: runtime-only (workspace AGENTS.md disabled)');
+  console.log('  Context injection: runtime-only, user-level isolated memory (workspace AGENTS.md disabled)');
 
   if (existsSync(CODEX_AGENTS_MD_PATH)) {
     const mdContent = readFileSync(CODEX_AGENTS_MD_PATH, 'utf-8');

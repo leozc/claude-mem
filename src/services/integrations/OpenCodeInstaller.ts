@@ -2,14 +2,14 @@
  * OpenCodeInstaller - OpenCode IDE integration installer for claude-mem
  *
  * Installs the claude-mem plugin into OpenCode's plugin directory and
- * sets up context injection via AGENTS.md.
+ * enables runtime-only, user-level isolated memory.
  *
  * Install strategy: File-based (Option A)
  * - Copies the built plugin to the OpenCode plugins directory
  * - Plugins in that directory are auto-loaded at startup
  *
- * Context injection:
- * - Appends/updates <claude-mem-context> section in AGENTS.md
+ * Context behavior:
+ * - Runtime-only; leaves AGENTS.md untouched
  *
  * Respects OPENCODE_CONFIG_DIR env var for config directory resolution.
  */
@@ -17,9 +17,8 @@
 import path from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // ============================================================================
@@ -45,9 +44,9 @@ export function getOpenCodePluginsDirectory(): string {
 }
 
 /**
- * Resolve the AGENTS.md path for context injection.
+ * Resolve the legacy AGENTS.md path shown for compatibility/status reporting.
  */
-export function getOpenCodeAgentsMdPath(): string {
+export function getOpenCodeLegacyAgentsReferencePath(): string {
   return path.join(getOpenCodeConfigDirectory(), 'AGENTS.md');
 }
 
@@ -125,40 +124,35 @@ export function installOpenCodePlugin(): number {
 }
 
 // ============================================================================
-// Context Injection (AGENTS.md)
+// Runtime-Only Context Behavior
 // ============================================================================
 
 /**
- * Inject or update claude-mem context in OpenCode's AGENTS.md file.
- *
- * If the file doesn't exist, creates it with the context section.
- * If the file exists, replaces the existing <claude-mem-context> section
- * or appends one at the end.
+ * Runtime-only mode: do not inject claude-mem context into OpenCode AGENTS.md.
  *
  * @param contextContent - The context content to inject (without tags)
  * @returns 0 on success, 1 on failure
  */
-export function injectContextIntoAgentsMd(contextContent: string): number {
+export function enableRuntimeOnlyOpenCodeContextMode(contextContent: string): number {
   void contextContent;
-  logger.info('OPENCODE', 'Skipping AGENTS.md context injection; runtime-only mode enabled', {
-    path: getOpenCodeAgentsMdPath(),
+  logger.info('OPENCODE', 'Skipping AGENTS.md context injection; runtime-only user-level isolation enabled', {
+    path: getOpenCodeLegacyAgentsReferencePath(),
   });
   return 0;
 }
 
 /**
- * Sync context from the worker into OpenCode's AGENTS.md.
- * Fetches context from the worker API and writes it to AGENTS.md.
+ * Sync context from the worker for OpenCode without mutating workspace files.
  *
  * @param port - Worker port number
  * @param project - Project name for context filtering
  */
-export async function syncContextToAgentsMd(
+export async function syncOpenCodeRuntimeOnlyContext(
   port: number,
   project: string,
 ): Promise<void> {
   try {
-    await fetchAndInjectOpenCodeContext(port, project);
+    await fetchOpenCodeRuntimeOnlyContext(port, project);
   } catch (error) {
     // Worker not available — non-critical
     if (error instanceof Error) {
@@ -183,7 +177,7 @@ async function fetchRealContextFromWorker(): Promise<string | null> {
   return realContext && realContext.trim() ? realContext : null;
 }
 
-async function fetchAndInjectOpenCodeContext(port: number, project: string): Promise<void> {
+async function fetchOpenCodeRuntimeOnlyContext(port: number, project: string): Promise<void> {
   const response = await fetch(
     `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`,
   );
@@ -193,7 +187,7 @@ async function fetchAndInjectOpenCodeContext(port: number, project: string): Pro
   if (contextText && contextText.trim()) {
     logger.debug('OPENCODE', 'Context fetched for runtime-only OpenCode mode', {
       project,
-      path: getOpenCodeAgentsMdPath(),
+      path: getOpenCodeLegacyAgentsReferencePath(),
       length: contextText.length,
     });
   }
@@ -203,22 +197,9 @@ async function fetchAndInjectOpenCodeContext(port: number, project: string): Pro
 // Uninstallation
 // ============================================================================
 
-function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {
-  if (
-    trimmedContent.length === 0 ||
-    trimmedContent === '# Claude-Mem Memory Context'
-  ) {
-    unlinkSync(agentsMdPath);
-    console.log(`  Removed empty AGENTS.md`);
-  } else {
-    writeFileSync(agentsMdPath, trimmedContent + '\n', 'utf-8');
-    console.log(`  Cleaned context from AGENTS.md`);
-  }
-}
-
 /**
  * Remove the claude-mem plugin from OpenCode.
- * Removes the plugin file and cleans up the AGENTS.md context section.
+ * Removes the plugin file and leaves AGENTS.md untouched.
  *
  * @returns 0 on success, 1 on failure
  */
@@ -238,7 +219,7 @@ export function uninstallOpenCodePlugin(): number {
     }
   }
 
-  console.log('  Left AGENTS.md untouched (runtime-only mode).');
+  console.log('  Left AGENTS.md untouched (runtime-only, user-level isolation mode).');
 
   return hasErrors ? 1 : 0;
 }
@@ -257,7 +238,7 @@ export function checkOpenCodeStatus(): number {
 
   const configDirectory = getOpenCodeConfigDirectory();
   const pluginPath = getInstalledPluginPath();
-  const agentsMdPath = getOpenCodeAgentsMdPath();
+  const agentsMdPath = getOpenCodeLegacyAgentsReferencePath();
 
   console.log(`Config directory: ${configDirectory}`);
   console.log(`  Exists: ${existsSync(configDirectory) ? 'yes' : 'no'}`);
@@ -267,8 +248,8 @@ export function checkOpenCodeStatus(): number {
   console.log(`  Installed: ${existsSync(pluginPath) ? 'yes' : 'no'}`);
   console.log('');
 
-  console.log('Context injection: runtime-only (AGENTS.md untouched)');
-  console.log(`  AGENTS path: ${agentsMdPath}`);
+  console.log('Context injection: runtime-only, user-level isolated memory (AGENTS.md untouched)');
+  console.log(`  Legacy AGENTS path: ${agentsMdPath}`);
   console.log(`  Exists: ${existsSync(agentsMdPath) ? 'yes' : 'no'}`);
 
   console.log('');
@@ -280,7 +261,7 @@ export function checkOpenCodeStatus(): number {
 // ============================================================================
 
 /**
- * Run the full OpenCode installation: plugin + context injection.
+ * Run the full OpenCode installation with runtime-only, user-level isolated memory.
  *
  * @returns 0 on success, 1 on failure
  */
@@ -293,7 +274,7 @@ export async function installOpenCodeIntegration(): Promise<number> {
     return pluginResult;
   }
 
-  // Step 2: Create initial context in AGENTS.md
+  // Step 2: Check whether memory is already available from the worker
   const placeholderContext = `# Memory Context from Past Sessions
 
 *No context yet. Complete your first session and context will appear here.*
@@ -318,14 +299,14 @@ Use claude-mem search tools for manual memory queries.`;
     }
   }
 
-  const injectResult = injectContextIntoAgentsMd(contextToInject);
+  const injectResult = enableRuntimeOnlyOpenCodeContextMode(contextToInject);
   if (injectResult !== 0) {
-    logger.warn('OPENCODE', 'Failed to enable runtime-only memory mode during install');
+    logger.warn('OPENCODE', 'Failed to enable runtime-only user-level isolation during install');
   } else {
     if (contextSource === 'existing memory') {
-      console.log('  Runtime-only memory mode enabled with existing memory available');
+      console.log('  Runtime-only, user-level isolated memory enabled with existing memory available');
     } else {
-      console.log('  Runtime-only memory mode enabled (worker not running)');
+      console.log('  Runtime-only, user-level isolated memory enabled (worker not running)');
     }
   }
 
@@ -333,7 +314,7 @@ Use claude-mem search tools for manual memory queries.`;
 Installation complete!
 
 Plugin installed to: ${getInstalledPluginPath()}
-Context injection: runtime-only (AGENTS.md untouched)
+Context injection: runtime-only, user-level isolated memory (AGENTS.md untouched)
 
 Next steps:
   1. Start claude-mem worker: npx claude-mem start

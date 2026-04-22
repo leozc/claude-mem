@@ -11,18 +11,18 @@ const installerSource = readFileSync(
   'utf-8',
 );
 
-describe('Codex workspace-local context', () => {
+describe('Codex runtime-only context isolation', () => {
   it('does not hardcode ~/.codex/AGENTS.md in the sample transcript watch config', () => {
     expect(configSource).not.toContain("path: '~/.codex/AGENTS.md'");
   });
 
-  it('documents workspace-local AGENTS.md injection for Codex', () => {
-    expect(installerSource).toContain('workspace-local AGENTS.md');
-    expect(installerSource).toContain('Context files: <workspace>/AGENTS.md');
+  it('documents runtime-only user-level isolation for Codex', () => {
+    expect(installerSource).toContain('runtime-only, user-level isolated memory (no workspace AGENTS.md writes)');
+    expect(installerSource).toContain('user-level isolated memory');
   });
 
-  it('cleans legacy global Codex context during install', () => {
-    expect(installerSource).toContain('cleanupLegacyCodexAgentsMdContext();');
-    expect(installerSource).toContain('Removed legacy global context');
+  it('leaves legacy global Codex context untouched during install', () => {
+    expect(installerSource).toContain('logLegacyCodexCompatibilityState();');
+    expect(installerSource).toContain('Skipping legacy AGENTS.md cleanup; runtime-only user-level isolation enabled');
   });
 });

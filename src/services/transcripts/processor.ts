@@ -347,7 +347,7 @@ export class TranscriptEventProcessor {
     if (!watch.context) return;
     if (watch.context.mode !== 'agents') return;
     if (watch.name === 'codex') {
-      logger.debug('TRANSCRIPT', 'Skipping Codex AGENTS.md context update; runtime-only mode enabled', {
+      logger.debug('TRANSCRIPT', 'Skipping Codex workspace mutation; runtime-only user-level isolation enabled', {
         watch: watch.name,
         cwd: session.cwd ?? watch.workspace,
       });
@@ -383,7 +383,7 @@ export class TranscriptEventProcessor {
     try {
       response = await workerHttpRequest(contextUrl);
     } catch (error: unknown) {
-      logger.warn('TRANSCRIPT', 'Failed to fetch AGENTS.md context', {
+      logger.warn('TRANSCRIPT', 'Failed to fetch transcript context for runtime-only processing', {
         error: error instanceof Error ? error.message : String(error)
       });
       return;
